@@ -1,16 +1,19 @@
 {
   "name": "kuato",
   "version": "0.1.0",
-  "description": "Open your mind. Session memory for Claude Code.",
+  "description": "Open your mind. Session memory for Claude Code and Copilot CLI.",
   "type": "module",
   "scripts": {
     "search": "bun run file-based/search.ts",
     "sync": "bun run postgres/sync.ts",
-    "serve": "bun run postgres/api.ts"
+    "serve": "bun run postgres/api.ts",
+    "test:parser": "bun test shared/parser.test.ts"
   },
   "keywords": [
     "claude",
     "claude-code",
+    "copilot",
+    "copilot-cli",
     "ai",
     "sessions",
     "search",

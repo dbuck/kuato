@@ -1,12 +1,15 @@
 # File-Based Session Search
 
-Zero-dependency session search. Works directly with Claude Code's JSONL files.
+Zero-dependency session search. Works directly with Claude Code and copilot-cli local session files.
 
 ## Usage
 
 ```bash
 # Search by keyword
 bun run search.ts --query "email system"
+
+# Search Copilot sessions
+bun run search.ts --source copilot --query "email system"
 
 # Limit to recent sessions
 bun run search.ts --query "refactor" --days 7
@@ -32,6 +35,7 @@ bun run search.ts --query "api" --tools Edit --days 14 --limit 10
 | `--tools` | `-t` | Filter by tools (comma-separated) |
 | `--file-pattern` | `-f` | Filter by file path |
 | `--limit` | `-l` | Max results (default: 20) |
+| `--source` | `-s` | Source mode (`auto`, `claude`, `copilot`) |
 | `--dir` | | Sessions directory |
 | `--help` | `-h` | Show help |
 
@@ -42,6 +46,7 @@ JSON array of matching sessions:
 ```json
 [
   {
+    "source": "claude",
     "id": "abc123-def456",
     "startedAt": "2025-01-15T10:30:00.000Z",
     "endedAt": "2025-01-15T11:45:00.000Z",
@@ -65,7 +70,9 @@ JSON array of matching sessions:
 
 ## How Search Works
 
-1. Scans all JSONL files in `~/.claude/projects/*/`
+1. Scans source directories (default `auto` mode):
+   - Claude: `~/.claude/projects/*/*.jsonl`
+   - Copilot: `~/.copilot/session-state/*/events.jsonl`
 2. Parses each file to extract metadata
 3. Filters by date, tools, file patterns
 4. Scores relevance against search query:
@@ -78,7 +85,9 @@ JSON array of matching sessions:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Sessions directory |
+| `KUATO_SOURCE` | `auto` | Source mode (`auto`, `claude`, `copilot`) |
+| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Claude sessions directory |
+| `COPILOT_SESSION_STATE_DIR` | `~/.copilot/session-state` | Copilot sessions directory |
 
 ## Performance
 
@@ -88,9 +97,9 @@ JSON array of matching sessions:
 
 The bottleneck is file I/O. Each session file must be read and parsed.
 
-## Integration with Claude
+## Integration with Agents
 
-Add this to your skill or CLAUDE.md:
+Add this to your skill/instructions file:
 
 ```markdown
 To search past sessions, run:

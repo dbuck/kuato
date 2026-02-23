@@ -11,15 +11,29 @@
  */
 
 import { readdirSync, statSync } from 'fs';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { parseArgs } from 'util';
-import { parseSessionFile, getSearchableText } from '../shared/parser.js';
-import type { ParsedSession, SearchResult, SearchOptions } from '../shared/types.js';
+import { parseSessionFile } from '../shared/parser.js';
+import type {
+  ParsedSession,
+  SearchResult,
+  SearchOptions,
+  SessionSearchSource,
+  SessionSource,
+} from '../shared/types.js';
 
-// Default Claude Code sessions directory
-const DEFAULT_SESSIONS_DIR =
+const DEFAULT_CLAUDE_SESSIONS_DIR =
   process.env.CLAUDE_SESSIONS_DIR ||
   join(process.env.HOME || '', '.claude', 'projects');
+const DEFAULT_COPILOT_SESSION_STATE_DIR =
+  process.env.COPILOT_SESSION_STATE_DIR ||
+  join(process.env.HOME || '', '.copilot', 'session-state');
+const DEFAULT_SOURCE = normalizeSource(process.env.KUATO_SOURCE);
+
+interface SearchRoot {
+  baseDir: string;
+  source: SessionSource;
+}
 
 /**
  * Find all session directories
@@ -43,31 +57,35 @@ function findSessionDirs(baseDir: string): string[] {
 /**
  * Find all JSONL files in a directory
  */
-function findSessionFiles(dir: string, options: SearchOptions): string[] {
+function findSessionFiles(
+  baseDir: string,
+  options: SearchOptions,
+  source: SessionSource
+): string[] {
   const files: string[] = [];
-  const now = new Date();
+  const sessionDirs = findSessionDirs(baseDir);
+  const since = getSinceDate(options);
 
-  // Calculate date cutoffs
-  let since: Date | undefined = options.since;
-  if (options.days && !since) {
-    since = new Date(now.getTime() - options.days * 24 * 60 * 60 * 1000);
-  }
+  for (const dir of sessionDirs) {
+    if (source === 'claude') {
+      try {
+        for (const file of readdirSync(dir)) {
+          if (!file.endsWith('.jsonl')) continue;
+          const filePath = join(dir, file);
+          if (isInDateRange(filePath, since, options.until)) {
+            files.push(filePath);
+          }
+        }
+      } catch {
+        // Directory not readable
+      }
+      continue;
+    }
 
-  try {
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.jsonl')) continue;
-
-      const filePath = join(dir, file);
-      const stat = statSync(filePath);
-
-      // Filter by modification time
-      if (since && stat.mtime < since) continue;
-      if (options.until && stat.mtime > options.until) continue;
-
+    const filePath = join(dir, 'events.jsonl');
+    if (isInDateRange(filePath, since, options.until)) {
       files.push(filePath);
     }
-  } catch {
-    // Directory not readable
   }
 
   return files;
@@ -154,19 +172,26 @@ function matchesFilters(session: ParsedSession, options: SearchOptions): boolean
  * Search sessions across all project directories
  */
 function searchSessions(
-  baseDir: string,
+  roots: SearchRoot[],
   options: SearchOptions
 ): SearchResult[] {
   const results: SearchResult[] = [];
-  const sessionDirs = findSessionDirs(baseDir);
+  const seenPaths = new Set<string>();
 
-  for (const dir of sessionDirs) {
-    const files = findSessionFiles(dir, options);
+  for (const root of roots) {
+    const files = findSessionFiles(root.baseDir, options, root.source);
 
     for (const filePath of files) {
+      if (seenPaths.has(filePath)) continue;
+      seenPaths.add(filePath);
+
       try {
         const session = parseSessionFile(filePath);
         if (!session) continue;
+
+        if (options.source && options.source !== 'auto' && session.source && session.source !== options.source) {
+          continue;
+        }
 
         // Skip empty sessions
         if (session.userMessages.length === 0) continue;
@@ -211,6 +236,7 @@ function searchSessions(
  */
 function formatResults(results: SearchResult[]): object[] {
   return results.map((r) => ({
+    source: r.source,
     id: r.id,
     startedAt: r.startedAt.toISOString(),
     endedAt: r.endedAt.toISOString(),
@@ -239,6 +265,7 @@ async function main() {
       'file-pattern': { type: 'string', short: 'f' },
       limit: { type: 'string', short: 'l' },
       dir: { type: 'string' },
+      source: { type: 'string', short: 's' },
       help: { type: 'boolean', short: 'h' },
     },
     allowPositionals: true,
@@ -246,7 +273,7 @@ async function main() {
 
   if (values.help) {
     console.log(`
-Claude Code Session Search (File-based)
+Session Search (File-based)
 
 Usage:
   bun run search.ts [options]
@@ -259,11 +286,13 @@ Options:
   -t, --tools <list>        Filter by tools (comma-separated)
   -f, --file-pattern <pat>  Filter by file path pattern
   -l, --limit <n>           Max results (default: 20)
-  --dir <path>              Sessions directory (default: ~/.claude/projects)
+  -s, --source <type>       Source: auto|claude|copilot (default: ${DEFAULT_SOURCE})
+  --dir <path>              Override source root directory
   -h, --help                Show this help
 
 Examples:
   bun run search.ts --query "email filtering" --days 7
+  bun run search.ts --source copilot
   bun run search.ts --tools Edit,Bash --limit 10
   bun run search.ts --file-pattern "components/"
 `);
@@ -278,13 +307,62 @@ Examples:
     tools: values.tools ? values.tools.split(',') : undefined,
     filePattern: values['file-pattern'],
     limit: values.limit ? parseInt(values.limit, 10) : 20,
+    source: normalizeSource(values.source) || DEFAULT_SOURCE,
   };
 
-  const baseDir = values.dir || DEFAULT_SESSIONS_DIR;
-  const results = searchSessions(baseDir, options);
+  const roots = resolveSearchRoots(values.dir, options.source || DEFAULT_SOURCE);
+  const results = searchSessions(roots, options);
   const formatted = formatResults(results);
 
   console.log(JSON.stringify(formatted, null, 2));
 }
 
 main().catch(console.error);
+
+function normalizeSource(value?: string): SessionSearchSource {
+  if (value === 'claude' || value === 'copilot' || value === 'auto') {
+    return value;
+  }
+  return 'auto';
+}
+
+function resolveSearchRoots(
+  overrideDir: string | undefined,
+  source: SessionSearchSource
+): SearchRoot[] {
+  if (source === 'claude') {
+    return [{ source: 'claude', baseDir: overrideDir || DEFAULT_CLAUDE_SESSIONS_DIR }];
+  }
+  if (source === 'copilot') {
+    return [{ source: 'copilot', baseDir: overrideDir || DEFAULT_COPILOT_SESSION_STATE_DIR }];
+  }
+  if (overrideDir) {
+    return [
+      { source: 'claude', baseDir: overrideDir },
+      { source: 'copilot', baseDir: overrideDir },
+    ];
+  }
+  return [
+    { source: 'claude', baseDir: DEFAULT_CLAUDE_SESSIONS_DIR },
+    { source: 'copilot', baseDir: DEFAULT_COPILOT_SESSION_STATE_DIR },
+  ];
+}
+
+function getSinceDate(options: SearchOptions): Date | undefined {
+  if (options.since) return options.since;
+  if (options.days) {
+    return new Date(Date.now() - options.days * 24 * 60 * 60 * 1000);
+  }
+  return undefined;
+}
+
+function isInDateRange(filePath: string, since?: Date, until?: Date): boolean {
+  try {
+    const stat = statSync(filePath);
+    if (since && stat.mtime < since) return false;
+    if (until && stat.mtime > until) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}

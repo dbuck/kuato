@@ -1,8 +1,14 @@
 /**
- * Types for Claude Code session JSONL format
+ * Types for supported session transcript formats
  */
 
-export interface SessionMessage {
+export type SessionSource = 'claude' | 'copilot';
+export type SessionSearchSource = SessionSource | 'auto';
+
+/**
+ * Claude Code session JSONL message
+ */
+export interface ClaudeSessionMessage {
   parentUuid: string | null;
   isSidechain: boolean;
   userType: 'external' | 'internal';
@@ -54,9 +60,21 @@ export interface TokenUsage {
 }
 
 /**
+ * Copilot CLI event log line
+ */
+export interface CopilotEvent {
+  type: string;
+  data?: Record<string, unknown>;
+  id?: string;
+  timestamp: string;
+  parentId?: string | null;
+}
+
+/**
  * Parsed session data extracted from JSONL
  */
 export interface ParsedSession {
+  source?: SessionSource;
   id: string;
   startedAt: Date;
   endedAt: Date;
@@ -106,4 +124,5 @@ export interface SearchOptions {
   tools?: string[];
   filePattern?: string;
   limit?: number;
+  source?: SessionSearchSource;
 }

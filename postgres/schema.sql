@@ -1,4 +1,4 @@
--- Claude Code Session Memory - PostgreSQL Schema
+-- Coding Agent Session Memory - PostgreSQL Schema
 -- Run this to set up the database
 
 -- Enable required extensions
@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- For fuzzy text matching
 
 -- Main sessions table
 CREATE TABLE IF NOT EXISTS sessions (
-    id VARCHAR(36) PRIMARY KEY,  -- Claude Code session UUID
+    id VARCHAR(36) PRIMARY KEY,  -- Session UUID
 
     -- Timestamps
     started_at TIMESTAMP WITH TIME ZONE,
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     git_branch VARCHAR(255),
     cwd TEXT,
     version VARCHAR(50),
+    source VARCHAR(20),
     message_count INTEGER DEFAULT 0,
 
     -- Token usage (totals)
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_ended_at ON sessions(ended_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_category ON sessions(category);
+CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 
 -- Full-text search index (GIN for performance)
 CREATE INDEX IF NOT EXISTS idx_sessions_search_vector ON sessions USING GIN(search_vector);
@@ -124,6 +126,7 @@ SELECT
     started_at,
     ended_at,
     git_branch,
+    source,
     message_count,
     input_tokens,
     output_tokens,

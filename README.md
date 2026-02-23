@@ -2,11 +2,11 @@
 
 Easily recall what you discussed with your favorite coding agents, what decisions you made, and where you left off so you can pick up where you left off as easily as asking "where did we leave off on XYZ..."
 
-This simple, fully local session recall skill works on Claude Code & other coding agents that support skills. Instant use with text search, optional local postgres with faster and more accurate search on larger session histories. 
+This simple, fully local session recall utility works with Claude Code and copilot-cli. Use instant text search or optional local Postgres for faster, smarter retrieval on larger histories.
 
 ## The Problem
 
-Claude Code forgets everything between sessions. You're deep in a feature, close the tab, and the next day ask "where were we?" only to get a blank stare.
+Coding agents forget everything between sessions. You're deep in a feature, close the tab, and the next day ask "where were we?" only to get a blank stare.
 
 > **Kuato:** What do you want, Mr. Quaid?   
 > **Quaid:** The same as you; to remember.   
@@ -14,7 +14,7 @@ Claude Code forgets everything between sessions. You're deep in a feature, close
 > **Quaid:** To be myself again.   
 > **Kuato:** You are what you do. A man is defined by his actions, not his memory.   
 
-Kuato gives Claude access to what you *did* - the actions that define your work.
+Kuato gives your agent access to what you *did* - the actions that define your work.
 
 ## Two Versions
 
@@ -33,7 +33,7 @@ Kuato gives Claude access to what you *did* - the actions that define your work.
 
 ## Quick Start: File-Based
 
-Zero setup. Works directly with Claude Code's JSONL files.
+Zero setup. Works directly with local session event files.
 
 ```bash
 # Clone the repo
@@ -42,6 +42,9 @@ cd kuato
 
 # Search your sessions
 bun run file-based/search.ts --query "email system" --days 7
+
+# Search Copilot sessions
+bun run file-based/search.ts --source copilot --query "email system"
 
 # Filter by tools used
 bun run file-based/search.ts --tools Edit,Bash --limit 10
@@ -87,6 +90,9 @@ bun install
 # Sync your sessions
 DATABASE_URL="postgres://claude:sessions@localhost:5433/claude_sessions" bun run sync
 
+# Sync Copilot sessions only
+KUATO_SOURCE="copilot" DATABASE_URL="postgres://claude:sessions@localhost:5433/claude_sessions" bun run sync
+
 # Start API server
 DATABASE_URL="postgres://claude:sessions@localhost:5433/claude_sessions" bun run serve
 ```
@@ -107,9 +113,9 @@ curl "http://localhost:3847/sessions/abc123-def456?with_transcript=true"
 curl "http://localhost:3847/sessions/stats?days=30"
 ```
 
-## Using with Claude Code
+## Using with Coding Agents
 
-The real power is teaching Claude how to search your history. Create a skill file:
+The real power is teaching your assistant how to search your history. Add reusable instructions:
 
 ```markdown
 # Session Search
@@ -125,7 +131,7 @@ When the user asks "where did we leave off" or "what did we discuss about X":
 3. Summarize what happened and offer to continue
 ```
 
-See `shared/claude-skill.md` for a complete skill template.
+See `shared/claude-skill.md` for Claude and `shared/copilot-instructions.md` for copilot-cli.
 
 ## How It Works
 
@@ -245,6 +251,7 @@ Search sessions with filters.
 | `until` | Sessions before date |
 | `tools` | Filter by tool names (comma-separated) |
 | `file_pattern` | Filter by file path pattern |
+| `source` | Filter by source (`claude` or `copilot`) |
 | `limit` | Max results (default 20, max 100) |
 
 ### GET /sessions/:id
@@ -261,7 +268,9 @@ Returns: session count, token totals, breakdown by model.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Where Claude Code stores sessions |
+| `KUATO_SOURCE` | `auto` | Session source mode (`auto`, `claude`, `copilot`) |
+| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Claude Code sessions root |
+| `COPILOT_SESSION_STATE_DIR` | `~/.copilot/session-state` | copilot-cli session state root |
 | `DATABASE_URL` | `postgres://localhost/claude_sessions` | PostgreSQL connection |
 | `PORT` | `3847` | API server port |
 

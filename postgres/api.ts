@@ -42,6 +42,7 @@ app.use('*', cors());
  *   until        - Sessions before this date
  *   tools        - Filter by tools (comma-separated)
  *   file_pattern - Filter by file path pattern
+ *   source       - Filter by source (claude|copilot)
  *   limit        - Max results (default 20, max 100)
  */
 app.get('/sessions', async (c) => {
@@ -52,6 +53,7 @@ app.get('/sessions', async (c) => {
     until,
     tools,
     file_pattern,
+    source,
     limit: limitStr,
   } = c.req.query();
 
@@ -73,6 +75,10 @@ app.get('/sessions', async (c) => {
   if (until) {
     conditions.push(`ended_at <= $${paramIndex++}`);
     params.push(new Date(until));
+  }
+  if (source) {
+    conditions.push(`source = $${paramIndex++}`);
+    params.push(source);
   }
 
   // Tool filtering
@@ -98,6 +104,7 @@ app.get('/sessions', async (c) => {
     started_at,
     ended_at,
     git_branch,
+    source,
     message_count,
     input_tokens,
     output_tokens,
@@ -167,6 +174,7 @@ app.get('/sessions/:id', async (c) => {
         started_at,
         ended_at,
         git_branch,
+        source,
         cwd,
         version,
         message_count,

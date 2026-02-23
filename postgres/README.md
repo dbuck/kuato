@@ -1,6 +1,6 @@
 # PostgreSQL Session Search
 
-Full-featured session search with weighted full-text search, fuzzy matching, and an API server.
+Full-featured session search with weighted full-text search, fuzzy matching, and an API server for Claude + Copilot session data.
 
 ## Quick Start
 
@@ -26,6 +26,9 @@ bun run serve
 ```bash
 # Incremental sync (new/changed files only)
 bun run sync
+
+# Copilot-only sync
+bun run sync --source copilot
 
 # Full sync (all sessions)
 bun run sync --all
@@ -73,6 +76,7 @@ curl "http://localhost:3847/sessions?search=refactor&tools=Edit&days=14&limit=10
 | `until` | Before date |
 | `tools` | Tool names (comma-separated) |
 | `file_pattern` | File path pattern |
+| `source` | Session source (`claude` or `copilot`) |
 | `limit` | Max results (default: 20, max: 100) |
 
 ### GET /sessions/:id
@@ -163,7 +167,9 @@ bun run db:up
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgres://localhost/claude_sessions` | Connection string |
-| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Sessions directory |
+| `KUATO_SOURCE` | `auto` | Source mode (`auto`, `claude`, `copilot`) |
+| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects` | Claude sessions directory |
+| `COPILOT_SESSION_STATE_DIR` | `~/.copilot/session-state` | Copilot sessions directory |
 | `PORT` | `3847` | API server port |
 
 ## Docker Compose

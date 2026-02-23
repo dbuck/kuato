@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Sync Claude Code sessions to PostgreSQL
+ * Sync coding-agent sessions to PostgreSQL
  *
  * Usage:
  *   bun run postgres/sync.ts                    # Incremental sync (new/changed)
@@ -10,7 +10,9 @@
  *
  * Environment:
  *   DATABASE_URL          - PostgreSQL connection string
- *   CLAUDE_SESSIONS_DIR   - Sessions directory (default: ~/.claude/projects)
+ *   CLAUDE_SESSIONS_DIR   - Claude sessions directory (default: ~/.claude/projects)
+ *   COPILOT_SESSION_STATE_DIR - Copilot sessions directory (default: ~/.copilot/session-state)
+ *   KUATO_SOURCE          - Source mode: auto|claude|copilot (default: auto)
  */
 
 import { readdirSync, statSync, readFileSync } from 'fs';
@@ -19,13 +21,17 @@ import { createHash } from 'crypto';
 import { parseArgs } from 'util';
 import postgres from 'postgres';
 import { parseSessionFile, getSearchableText } from '../shared/parser.js';
-import type { ParsedSession } from '../shared/types.js';
+import type { SessionSearchSource, SessionSource } from '../shared/types.js';
 
 // Configuration
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://localhost/claude_sessions';
-const DEFAULT_SESSIONS_DIR =
+const DEFAULT_CLAUDE_SESSIONS_DIR =
   process.env.CLAUDE_SESSIONS_DIR ||
   join(process.env.HOME || '', '.claude', 'projects');
+const DEFAULT_COPILOT_SESSION_STATE_DIR =
+  process.env.COPILOT_SESSION_STATE_DIR ||
+  join(process.env.HOME || '', '.copilot', 'session-state');
+const DEFAULT_SOURCE = normalizeSource(process.env.KUATO_SOURCE);
 
 // Connect to database
 const sql = postgres(DATABASE_URL);
@@ -35,6 +41,7 @@ interface SyncOptions {
   days?: number;
   force?: boolean;
   limit?: number;
+  source?: SessionSearchSource;
 }
 
 interface SyncStats {
@@ -42,6 +49,16 @@ interface SyncStats {
   updated: number;
   skipped: number;
   errors: number;
+}
+
+interface SyncRoot {
+  baseDir: string;
+  source: SessionSource;
+}
+
+interface SyncFile {
+  path: string;
+  mtime: Date;
 }
 
 /**
@@ -85,43 +102,68 @@ function findSessionDirs(baseDir: string): string[] {
  * Find JSONL files to sync
  */
 function findFilesToSync(
-  baseDir: string,
+  roots: SyncRoot[],
   options: SyncOptions
-): { path: string; mtime: Date }[] {
-  const files: { path: string; mtime: Date }[] = [];
-  const sessionDirs = findSessionDirs(baseDir);
+): SyncFile[] {
+  const files: SyncFile[] = [];
 
-  const cutoffDate = options.days
+  const cutoffDate = options.all
+    ? null
+    : options.days
     ? new Date(Date.now() - options.days * 24 * 60 * 60 * 1000)
     : null;
 
-  for (const dir of sessionDirs) {
-    try {
-      for (const file of readdirSync(dir)) {
-        if (!file.endsWith('.jsonl')) continue;
+  for (const root of roots) {
+    const sessionDirs = findSessionDirs(root.baseDir);
+    for (const dir of sessionDirs) {
+      if (root.source === 'claude') {
+        try {
+          for (const file of readdirSync(dir)) {
+            if (!file.endsWith('.jsonl')) continue;
 
-        const filePath = join(dir, file);
-        const stat = statSync(filePath);
+            const filePath = join(dir, file);
+            const stat = statSync(filePath);
 
-        // Skip old files unless doing full sync
-        if (cutoffDate && stat.mtime < cutoffDate) continue;
+            // Skip old files unless doing full sync
+            if (cutoffDate && stat.mtime < cutoffDate) continue;
 
-        files.push({ path: filePath, mtime: stat.mtime });
+            files.push({ path: filePath, mtime: stat.mtime });
+          }
+        } catch {
+          // Directory not readable
+        }
+        continue;
       }
-    } catch {
-      // Directory not readable
+
+      const filePath = join(dir, 'events.jsonl');
+      try {
+        const stat = statSync(filePath);
+        if (cutoffDate && stat.mtime < cutoffDate) continue;
+        files.push({ path: filePath, mtime: stat.mtime });
+      } catch {
+        // Missing events.jsonl
+      }
+    }
+  }
+
+  const deduped = new Map<string, SyncFile>();
+  for (const file of files) {
+    if (!deduped.has(file.path)) {
+      deduped.set(file.path, file);
     }
   }
 
   // Sort by modification time (newest first)
-  files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+  const sorted = Array.from(deduped.values()).sort(
+    (a, b) => b.mtime.getTime() - a.mtime.getTime()
+  );
 
   // Apply limit
   if (options.limit) {
-    return files.slice(0, options.limit);
+    return sorted.slice(0, options.limit);
   }
 
-  return files;
+  return sorted;
 }
 
 /**
@@ -152,8 +194,8 @@ async function syncSession(
       return 'skipped';
     }
 
-    // Build search text from user messages
-    const searchText = session.userMessages.join(' ');
+    // Build search text from normalized session content
+    const searchText = getSearchableText(session);
 
     // Upsert session
     await sql`
@@ -164,6 +206,7 @@ async function syncSession(
         git_branch,
         cwd,
         version,
+        source,
         message_count,
         input_tokens,
         output_tokens,
@@ -185,6 +228,7 @@ async function syncSession(
         ${session.gitBranch},
         ${session.cwd},
         ${session.version},
+        ${session.source || 'claude'},
         ${session.messageCount},
         ${session.inputTokens},
         ${session.outputTokens},
@@ -206,6 +250,7 @@ async function syncSession(
         git_branch = EXCLUDED.git_branch,
         cwd = EXCLUDED.cwd,
         version = EXCLUDED.version,
+        source = EXCLUDED.source,
         message_count = EXCLUDED.message_count,
         input_tokens = EXCLUDED.input_tokens,
         output_tokens = EXCLUDED.output_tokens,
@@ -232,7 +277,7 @@ async function syncSession(
 /**
  * Main sync function
  */
-async function sync(baseDir: string, options: SyncOptions): Promise<SyncStats> {
+async function sync(roots: SyncRoot[], options: SyncOptions): Promise<SyncStats> {
   const stats: SyncStats = {
     created: 0,
     updated: 0,
@@ -240,14 +285,18 @@ async function sync(baseDir: string, options: SyncOptions): Promise<SyncStats> {
     errors: 0,
   };
 
-  console.log(`Syncing sessions from: ${baseDir}`);
+  console.log(
+    `Syncing source=${options.source || DEFAULT_SOURCE} from ${roots
+      .map((root) => `${root.source}:${root.baseDir}`)
+      .join(', ')}`
+  );
 
   // Get existing hashes for change detection
   const existingHashes = await getExistingHashes();
   console.log(`Found ${existingHashes.size} existing sessions in database`);
 
   // Find files to sync
-  const files = findFilesToSync(baseDir, options);
+  const files = findFilesToSync(roots, options);
   console.log(`Found ${files.length} session files to process`);
 
   // Process each file
@@ -272,13 +321,14 @@ async function main() {
       force: { type: 'boolean', short: 'f' },
       limit: { type: 'string', short: 'l' },
       dir: { type: 'string' },
+      source: { type: 'string', short: 's' },
       help: { type: 'boolean', short: 'h' },
     },
   });
 
   if (values.help) {
     console.log(`
-Claude Code Session Sync (PostgreSQL)
+Session Sync (PostgreSQL)
 
 Usage:
   bun run sync.ts [options]
@@ -288,15 +338,19 @@ Options:
   -d, --days <n>         Only sync last N days
   -f, --force            Re-sync even if file unchanged
   -l, --limit <n>        Max files to process
-  --dir <path>           Sessions directory
+  -s, --source <type>    Source: auto|claude|copilot (default: ${DEFAULT_SOURCE})
+  --dir <path>           Override source root directory
   -h, --help             Show this help
 
 Environment:
   DATABASE_URL           PostgreSQL connection string
-  CLAUDE_SESSIONS_DIR    Default sessions directory
+  CLAUDE_SESSIONS_DIR    Default Claude sessions directory
+  COPILOT_SESSION_STATE_DIR Default Copilot sessions directory
+  KUATO_SOURCE           Default source mode
 
 Examples:
   bun run sync.ts                    # Incremental sync
+  bun run sync.ts --source copilot
   bun run sync.ts --all              # Full sync
   bun run sync.ts --days 7           # Last week only
   bun run sync.ts --force            # Force re-sync
@@ -309,12 +363,13 @@ Examples:
     days: values.days ? parseInt(values.days, 10) : undefined,
     force: values.force,
     limit: values.limit ? parseInt(values.limit, 10) : undefined,
+    source: normalizeSource(values.source) || DEFAULT_SOURCE,
   };
 
-  const baseDir = values.dir || DEFAULT_SESSIONS_DIR;
+  const roots = resolveSyncRoots(values.dir, options.source || DEFAULT_SOURCE);
 
   try {
-    const stats = await sync(baseDir, options);
+    const stats = await sync(roots, options);
 
     console.log('\nSync complete:');
     console.log(`  Created: ${stats.created}`);
@@ -330,3 +385,32 @@ main().catch((error) => {
   console.error('Sync failed:', error);
   process.exit(1);
 });
+
+function normalizeSource(value?: string): SessionSearchSource {
+  if (value === 'claude' || value === 'copilot' || value === 'auto') {
+    return value;
+  }
+  return 'auto';
+}
+
+function resolveSyncRoots(
+  overrideDir: string | undefined,
+  source: SessionSearchSource
+): SyncRoot[] {
+  if (source === 'claude') {
+    return [{ source: 'claude', baseDir: overrideDir || DEFAULT_CLAUDE_SESSIONS_DIR }];
+  }
+  if (source === 'copilot') {
+    return [{ source: 'copilot', baseDir: overrideDir || DEFAULT_COPILOT_SESSION_STATE_DIR }];
+  }
+  if (overrideDir) {
+    return [
+      { source: 'claude', baseDir: overrideDir },
+      { source: 'copilot', baseDir: overrideDir },
+    ];
+  }
+  return [
+    { source: 'claude', baseDir: DEFAULT_CLAUDE_SESSIONS_DIR },
+    { source: 'copilot', baseDir: DEFAULT_COPILOT_SESSION_STATE_DIR },
+  ];
+}
